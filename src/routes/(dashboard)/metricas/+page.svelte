@@ -1,8 +1,76 @@
 <script lang="ts">
-  let temperatura = $state(35.2);
-  let ph = $state(7.1);
-  let presion = $state(1.2);
-  let nivelGas = $state(68);
+  import { onMount } from "svelte";
+  import {
+    collection,
+    onSnapshot,
+    query,
+    orderBy,
+    limit,
+  } from "firebase/firestore";
+  import { db } from "../../../lib/firebase/firebase"; // Asegúrate de que apunte a tu archivo firebase.ts
+  import LineChart from "$lib/components/LineChart.svelte"; // Importamos nuestro componente gráfico
+
+  // Variables reactivas (Svelte 5) para las tarjetas
+  let temperatura = $state(0);
+  let ph = $state(7.1); // Queda estático por ahora
+  let presion = $state(1.2); // Queda estático por ahora
+  let nivelGas = $state(0);
+  let ultimaActualizacion = $state("Conectando...");
+
+  // Arreglos reactivos para la historia de la gráfica
+  let historialHoras = $state<string[]>([]);
+  let historialMetano = $state<number[]>([]);
+
+  onMount(() => {
+    // Pedimos los últimos 15 registros para tener historia que dibujar
+    const q = query(
+      collection(db, "lecturas_biodigestor"),
+      orderBy("timestamp", "desc"),
+      limit(15),
+    );
+
+    // onSnapshot escucha cambios 24/7 sin recargar
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      // Necesitamos invertir los datos porque Firestore nos da del más nuevo al más viejo
+      // Y las gráficas se dibujan de izquierda (viejo) a derecha (nuevo)
+      const nuevosTiempos: string[] = [];
+      const nuevosMetanos: number[] = [];
+
+      let primerDocumento = true;
+
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+
+        // Extraemos la historia para la gráfica
+        if (data.timestamp) {
+          const fecha = data.timestamp.toDate();
+          nuevosTiempos.unshift(
+            fecha.toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }),
+          );
+          nuevosMetanos.unshift(data.metano_ppm);
+
+          // Actualizamos los números grandes de arriba SOLAMENTE con el dato más reciente
+          if (primerDocumento) {
+            temperatura = data.temperatura_c;
+            nivelGas = data.metano_ppm;
+            ultimaActualizacion = fecha.toLocaleTimeString();
+            primerDocumento = false;
+          }
+        }
+      });
+
+      // Sobrescribimos el estado reactivo
+      historialHoras = nuevosTiempos;
+      historialMetano = nuevosMetanos;
+    });
+
+    // Desconecta el websocket si el usuario sale de la página
+    return () => unsubscribe();
+  });
 </script>
 
 <div class="space-y-6 max-w-[1600px] mx-auto pb-10">
@@ -249,7 +317,7 @@
         </h3>
         <div class="flex items-baseline gap-1.5">
           <span class="text-4xl font-black text-white">{nivelGas}</span>
-          <span class="text-lg font-bold text-lime-400">%</span>
+          <span class="text-lg font-bold text-lime-400">ppm</span>
         </div>
       </div>
       <div
@@ -299,35 +367,29 @@
       <div class="flex gap-2">
         <span
           class="px-3 py-1.5 bg-black/40 border border-green-900/30 rounded-lg text-xs font-mono text-gray-400 shadow-inner"
-          >Actualización: 1s</span
+          >Último dato: {ultimaActualizacion}</span
         >
       </div>
     </div>
 
+    <!-- AQUÍ REEMPLAZAMOS EL MARCADOR POR LA GRÁFICA REAL -->
     <div
-      class="flex-1 w-full bg-black/30 border border-dashed border-green-900/50 rounded-xl flex items-center justify-center relative overflow-hidden"
+      class="flex-1 w-full bg-black/30 border border-dashed border-green-900/50 rounded-xl flex items-center justify-center relative overflow-hidden p-4"
     >
-      <div
-        class="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-500/5 to-transparent w-full h-[20%] animate-[bounce_3s_infinite]"
-      ></div>
-
-      <p
-        class="text-gray-500 font-mono text-xs md:text-sm flex flex-col items-center gap-3"
-      >
-        <svg
-          class="w-10 h-10 text-gray-600 animate-pulse"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          ><path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="1.5"
-            d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"
-          ></path></svg
-        >
-        [ Espacio reservado para componente ECharts / Gráfica Tiempo Real ]
-      </p>
+      {#if historialMetano.length > 0}
+        <LineChart
+          id="grafica-metano"
+          title="Producción de Metano (ppm)"
+          dataAxis={historialHoras}
+          dataSeries={historialMetano}
+          lineColor="#a3e635"
+          areaColor="rgba(163, 230, 81, 0.4)"
+        />
+      {:else}
+        <p class="text-gray-500 font-mono text-xs animate-pulse">
+          Cargando curva histórica...
+        </p>
+      {/if}
     </div>
   </div>
 </div>
