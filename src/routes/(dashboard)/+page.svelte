@@ -11,6 +11,8 @@
   import LineChart from "$lib/components/LineChart.svelte";
   import DonutChart from "$lib/components/DonutChart.svelte";
   import * as echarts from "echarts";
+  import jsPDF from "jspdf";
+  import autoTable from "jspdf-autotable";
 
   // --- LÓGICA DE TIEMPO REAL (Reloj Vivo) ---
   let tiempoActual = $state(new Date());
@@ -43,8 +45,6 @@
   // --- VARIABLES REACTIVAS PARA LAS GRÁFICAS ---
   let historialHoras = $state<string[]>([]);
   let historialMetano = $state<number[]>([]);
-
-  // Historiales para la gráfica cruzada
   let historialTemp = $state<number[]>([]);
   let historialPresion = $state<number[]>([]);
   let historialPh = $state<number[]>([]);
@@ -64,6 +64,7 @@
     // --- PETICIÓN AL MOTOR DE IA (FastAPI) ---
     const fetchIA = async () => {
       try {
+        // NOTA: Cuando subas el backend a la nube (Render/Railway), cambia localhost por tu URL real
         const res = await fetch("http://localhost:8000/api/pronostico-general");
         if (!res.ok) throw new Error("Fallo al conectar con el backend");
         pronosticoIA = await res.json();
@@ -73,8 +74,7 @@
         cargandoIA = false;
       }
     };
-    fetchIA(); // Llama la primera vez
-    // Actualizar el pronóstico de IA cada 60 segundos
+    fetchIA();
     const intervaloIA = setInterval(fetchIA, 60000);
 
     // 1. Ciclo del Reloj
@@ -82,7 +82,7 @@
       tiempoActual = new Date();
     }, 1000);
 
-    // 2. Conexión a Firebase (Pedimos 15 registros para las gráficas)
+    // 2. Conexión a Firebase
     const q = query(
       collection(db, "lecturas_biodigestor"),
       orderBy("timestamp", "desc"),
@@ -111,11 +111,9 @@
             }),
           );
 
-          // Datos reales (o 0 si fallan)
           metanos.unshift(data.metano_ppm || 0);
           temps.unshift(data.temperatura_c || 0);
 
-          // SIMULACIÓN TEMPORAL: Como el ESP32 aún no envía esto, creamos una pequeña variación
           presiones.unshift(
             data.presion || parseFloat((1.2 + Math.random() * 0.06).toFixed(2)),
           );
@@ -126,13 +124,11 @@
             data.caudal || parseFloat((1.4 + Math.random() * 0.1).toFixed(2)),
           );
 
-          // Actualizamos las tarjetas SOLO con el dato más reciente
           if (primerDocumento) {
             if (data.temperatura_c)
               valTemperatura = data.temperatura_c.toFixed(1);
             if (data.metano_ppm) valGas = data.metano_ppm.toString();
 
-            // Actualizamos los valores de las tarjetas
             valPresion = presiones[0].toString();
             valPh = phs[0].toString();
             valCaudal = caudales[0].toString();
@@ -142,7 +138,6 @@
         }
       });
 
-      // Sobrescribimos el estado para animar las gráficas
       historialHoras = horas;
       historialMetano = metanos;
       historialTemp = temps;
@@ -243,6 +238,72 @@
       second: "2-digit",
     }),
   );
+
+  // --- FUNCIÓN PARA GENERAR REPORTE PDF ---
+  const generarReportePDF = () => {
+    const doc = new jsPDF();
+
+    // 1. Título y Encabezado
+    doc.setFontSize(20);
+    doc.setTextColor(16, 185, 129);
+    doc.text("Reporte de Telemetría - Sistema BioCore", 14, 22);
+
+    doc.setFontSize(11);
+    doc.setTextColor(100);
+    doc.text(`Generado el: ${fechaFormateada} a las ${horaFormateada}`, 14, 30);
+
+    // 2. Tabla de Métricas Actuales
+    autoTable(doc, {
+      startY: 40,
+      head: [["Parámetro", "Valor Actual", "Unidad", "Estado del Sistema"]],
+      body: [
+        [
+          "Temperatura",
+          valTemperatura,
+          "°C",
+          alertaTemperaturaAlta ? "PELIGRO" : "Óptimo",
+        ],
+        ["Nivel de Gas (Metano)", valGas, "%", "Óptimo"],
+        ["Presión", valPresion, "kPa", "Óptimo"],
+        ["pH", valPh, "", "Óptimo"],
+        ["Caudal de Biogás", valCaudal, "m³/h", "Óptimo"],
+        ["Humedad", valHumedad, "%", "Óptimo"],
+      ],
+      headStyles: { fillColor: [16, 185, 129] },
+      theme: "grid",
+    });
+
+    // 3. Resultados de Inteligencia Artificial
+    if (pronosticoIA && !pronosticoIA.mensaje) {
+      // @ts-expect-error: jspdf-autotable inyecta lastAutoTable dinámicamente
+      const finalY = doc.lastAutoTable.finalY || 100;
+
+      doc.setFontSize(14);
+      doc.setTextColor(0);
+      doc.text("Diagnóstico Predictivo (IA)", 14, finalY + 15);
+
+      doc.setFontSize(11);
+      doc.text(
+        `Temperatura Base Estable: ${pronosticoIA.temperatura_promedio} °C`,
+        14,
+        finalY + 25,
+      );
+      doc.text(
+        `Producción Proyectada: ${pronosticoIA.metano_proyectado_ppm} ppm`,
+        14,
+        finalY + 32,
+      );
+
+      const analisisTexto = doc.splitTextToSize(
+        `Conclusión: ${pronosticoIA.analisis}`,
+        180,
+      );
+      doc.text(analisisTexto, 14, finalY + 42);
+    }
+
+    // 4. Descargar el archivo
+    doc.save(`Reporte_Biodigestor_${fechaFormateada.replace(/\//g, "-")}.pdf`);
+  };
 
   // --- DATOS DE MÉTRICAS (TARJETAS) ---
   let metrics = $derived([
@@ -363,6 +424,7 @@
       </div>
 
       <button
+        onclick={generarReportePDF}
         class="interactive-card flex items-center gap-2 bg-gradient-to-r from-green-700 to-green-600 hover:from-green-600 hover:to-lime-600 text-white text-sm font-bold px-5 py-2 rounded-md shadow-[0_0_15px_rgba(22,163,74,0.4)] border border-green-500/50"
       >
         <svg

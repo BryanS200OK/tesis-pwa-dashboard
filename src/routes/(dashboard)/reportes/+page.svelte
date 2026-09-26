@@ -1,6 +1,8 @@
 <script lang="ts">
   import { collection, getDocs, query, orderBy } from "firebase/firestore";
   import { db } from "$lib/firebase/firebase";
+  import jsPDF from "jspdf";
+  import autoTable from "jspdf-autotable";
 
   // --- VARIABLES DE ESTADO Y FILTROS ---
   let busqueda = $state("");
@@ -101,8 +103,7 @@
     if (paginaActual > 1) paginaActual--;
   }
 
-  // --- LÓGICA PARA EXPORTAR DATOS REALES DE FIREBASE (CSV) ---
-  // Esta función descarga todo el historial de la BD y crea un archivo CSV para que el usuario lo abra en Excel
+  // --- FUNCIÓN CORREGIDA PARA EXPORTAR EXCEL (CSV UTF-8) ---
   async function exportarDatosRealesCSV() {
     generandoDescarga = true;
     try {
@@ -112,49 +113,106 @@
       );
       const querySnapshot = await getDocs(q);
 
-      let csvContent = "data:text/csv;charset=utf-8,";
-      // Cabecera del archivo Excel/CSV
+      // El BOM (\uFEFF) fuerza a Excel a leer los acentos correctamente.
+      // Usamos punto y coma (;) porque Excel en español separa las columnas con eso, no con comas.
+      let csvContent = "\uFEFF";
       csvContent +=
-        "FECHA_HORA,TEMPERATURA_C,METANO_PPM,PH,PRESION_BAR,CAUDAL\n";
+        "FECHA_HORA;TEMPERATURA_C;METANO_PPM;PH;PRESION_BAR;CAUDAL\n";
 
       querySnapshot.forEach((doc) => {
         const d = doc.data();
         if (d.timestamp) {
           const fechaStr = d.timestamp.toDate().toLocaleString("es-VE");
-          // Si no existe el dato, ponemos 'N/A'
           const temp = d.temperatura_c ?? "N/A";
           const metano = d.metano_ppm ?? "N/A";
           const ph = d.ph ?? "N/A";
           const presion = d.presion ?? "N/A";
           const caudal = d.caudal ?? "N/A";
 
-          csvContent += `${fechaStr},${temp},${metano},${ph},${presion},${caudal}\n`;
+          csvContent += `${fechaStr};${temp};${metano};${ph};${presion};${caudal}\n`;
         }
       });
 
-      // Crear archivo y forzar descarga
-      const encodedUri = encodeURI(csvContent);
+      // Crear archivo como Blob
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
+      link.setAttribute("href", url);
       link.setAttribute(
         "download",
-        `Reporte_BioCore_${new Date().toISOString().split("T")[0]}.csv`,
+        `Data_BioCore_${new Date().toISOString().split("T")[0]}.csv`,
       );
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
     } catch (error) {
-      console.error("Error exportando datos: ", error);
-      alert("Hubo un error al intentar generar el archivo.");
+      console.error("Error exportando CSV: ", error);
+      alert("Hubo un error al intentar generar el archivo Excel.");
     } finally {
       generandoDescarga = false;
     }
   }
 
+  // --- NUEVA FUNCIÓN PARA EXPORTAR PDF ---
+  async function exportarDatosRealesPDF() {
+    generandoDescarga = true;
+    try {
+      const q = query(
+        collection(db, "lecturas_biodigestor"),
+        orderBy("timestamp", "desc"),
+      );
+      const querySnapshot = await getDocs(q);
+
+      const doc = new jsPDF();
+      const fechaHoy = new Date().toLocaleDateString("es-VE");
+
+      doc.setFontSize(18);
+      doc.setTextColor(16, 185, 129);
+      doc.text("Historial de Operaciones - BioCore", 14, 22);
+
+      doc.setFontSize(11);
+      doc.setTextColor(100);
+      doc.text(`Fecha de extracción: ${fechaHoy}`, 14, 30);
+
+      const filasTabla: string[][] = [];
+      querySnapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        if (d.timestamp) {
+          filasTabla.push([
+            d.timestamp.toDate().toLocaleString("es-VE"),
+            d.temperatura_c ? `${d.temperatura_c} °C` : "N/A",
+            d.metano_ppm ? `${d.metano_ppm} ppm` : "N/A",
+            d.ph ? d.ph.toString() : "N/A",
+            d.caudal ? `${d.caudal} m³/h` : "N/A",
+          ]);
+        }
+      });
+
+      autoTable(doc, {
+        startY: 40,
+        head: [["Fecha y Hora", "Temp.", "Metano", "pH", "Caudal"]],
+        body: filasTabla,
+        headStyles: { fillColor: [16, 185, 129] },
+        theme: "grid",
+      });
+
+      doc.save(`Reporte_BioCore_${new Date().toISOString().split("T")[0]}.pdf`);
+    } catch (error) {
+      console.error("Error exportando PDF: ", error);
+      alert("Hubo un error al intentar generar el archivo PDF.");
+    } finally {
+      generandoDescarga = false;
+    }
+  }
+
+  // --- CONTROLADOR DE DESCARGAS ---
   function simularDescargaVisual(id: string, formato: string) {
     if (formato === "csv" || formato === "xlsx") {
-      // Ejecuta la descarga real si piden CSV o Excel
       exportarDatosRealesCSV();
+      return;
+    }
+    if (formato === "pdf") {
+      exportarDatosRealesPDF();
       return;
     }
 
@@ -184,13 +242,14 @@
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-          ><path
+        >
+          <path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
             d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-          ></path></svg
-        >
+          ></path>
+        </svg>
         Genera, visualiza y descarga históricos operativos de la planta.
       </p>
     </div>
@@ -199,14 +258,19 @@
       onclick={() => (mostrarModalNuevo = true)}
       class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-green-500 text-white text-sm font-bold rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.3)] border border-emerald-400/50 hover:shadow-[0_0_25px_rgba(16,185,129,0.5)] transition-all duration-300 hover:-translate-y-0.5"
     >
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-        ><path
+      <svg
+        class="w-5 h-5"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
           stroke-linecap="round"
           stroke-linejoin="round"
           stroke-width="2.5"
           d="M12 4v16m8-8H4"
-        ></path></svg
-      >
+        ></path>
+      </svg>
       Generar Nuevo
     </button>
   </div>
@@ -228,13 +292,14 @@
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-          ><path
+        >
+          <path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
             d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-          ></path></svg
-        >
+          ></path>
+        </svg>
       </span>
       <input
         type="text"
@@ -264,32 +329,33 @@
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-          ><path
+        >
+          <path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
             d="M19 9l-7 7-7-7"
-          ></path></svg
-        >
+          ></path>
+        </svg>
       </div>
     </div>
   </div>
 
-  <!-- TABLA DE REPORTES HISTÓRICOS -->
+  <!-- TABLA DE REPORTES HISTÓRICOS CORREGIDA (table-fixed y w-full) -->
   <div
     class="interactive-card bg-[#000a08]/90 backdrop-blur-md rounded-3xl shadow-2xl border border-emerald-900/30 overflow-hidden relative"
   >
     <div class="overflow-x-auto">
-      <table class="w-full text-left text-sm whitespace-nowrap">
+      <table class="w-full text-left text-sm table-fixed min-w-[800px]">
         <thead
           class="bg-gradient-to-r from-[#01211b] to-[#001410] text-gray-400 font-bold border-b border-emerald-900/40 uppercase tracking-widest text-[10px]"
         >
           <tr>
-            <th class="px-8 py-6 pl-10">ID</th>
-            <th class="px-6 py-6">Nombre del Reporte</th>
-            <th class="px-6 py-6">Período Cubierto</th>
-            <th class="px-6 py-6">Fecha Generado</th>
-            <th class="px-6 py-6 text-center">Exportar Archivo</th>
+            <th class="w-1/6 px-6 py-5 pl-8">ID</th>
+            <th class="w-2/6 px-6 py-5">Nombre del Reporte</th>
+            <th class="w-1/6 px-6 py-5">Período Cubierto</th>
+            <th class="w-1/6 px-6 py-5">Fecha Generado</th>
+            <th class="w-1/6 px-6 py-5 text-center">Exportar Archivo</th>
           </tr>
         </thead>
 
@@ -303,13 +369,14 @@
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
-                    ><path
+                  >
+                    <path
                       stroke-linecap="round"
                       stroke-linejoin="round"
                       stroke-width="1.5"
                       d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    ></path></svg
-                  >
+                    ></path>
+                  </svg>
                   <p class="tracking-wide font-mono">
                     No se encontraron reportes que coincidan con tu búsqueda.
                   </p>
@@ -318,43 +385,45 @@
             </tr>
           {/if}
 
-          <!-- CORRECCIÓN DE KEY: Añadido (reporte.id) -->
           {#each reportesPaginados as reporte (reporte.id)}
             <tr
               class="hover:bg-emerald-900/10 transition-colors cursor-default group"
             >
-              <td
-                class="px-8 py-5 pl-10 font-mono text-emerald-400/80 font-bold flex items-center gap-3"
-              >
-                <span
-                  class="w-1.5 h-1.5 rounded-full bg-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity shadow-[0_0_8px_#10b981]"
-                ></span>
-                {reporte.id}
-              </td>
-              <td class="px-6 py-5 flex flex-col">
-                <span
-                  class="font-bold text-gray-200 group-hover:text-white transition-colors text-base"
-                  >{reporte.nombre}</span
+              <td class="px-6 py-5 pl-8 align-middle">
+                <div
+                  class="font-mono text-emerald-400/80 font-bold flex items-center gap-3"
                 >
-                <div class="flex items-center gap-2 mt-1.5">
                   <span
-                    class="text-[9px] uppercase font-bold tracking-widest px-2.5 py-0.5 rounded-md bg-[#001410] border border-cyan-900/50 text-cyan-400 shadow-inner"
-                    >{reporte.tipo}</span
-                  >
-                  <span class="text-[10px] text-gray-500 font-mono"
-                    >{reporte.size}</span
-                  >
+                    class="w-1.5 h-1.5 rounded-full bg-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity shadow-[0_0_8px_#10b981]"
+                  ></span>
+                  {reporte.id}
                 </div>
               </td>
-              <td class="px-6 py-5 font-mono text-gray-400 text-xs"
+              <td class="px-6 py-5 align-middle">
+                <div class="flex flex-col">
+                  <span
+                    class="font-bold text-gray-200 group-hover:text-white transition-colors text-base whitespace-normal leading-tight"
+                    >{reporte.nombre}</span
+                  >
+                  <div class="flex items-center gap-2 mt-2">
+                    <span
+                      class="text-[9px] uppercase font-bold tracking-widest px-2.5 py-0.5 rounded-md bg-[#001410] border border-cyan-900/50 text-cyan-400 shadow-inner"
+                      >{reporte.tipo}</span
+                    >
+                    <span class="text-[10px] text-gray-500 font-mono"
+                      >{reporte.size}</span
+                    >
+                  </div>
+                </div>
+              </td>
+              <td class="px-6 py-5 font-mono text-gray-400 text-xs align-middle"
                 >{reporte.rango}</td
               >
-              <td class="px-6 py-5 font-medium text-gray-300"
+              <td class="px-6 py-5 font-medium text-gray-300 align-middle"
                 >{reporte.fecha}</td
               >
-              <td class="px-6 py-5">
+              <td class="px-6 py-5 align-middle">
                 <div class="flex items-center justify-center gap-2">
-                  <!-- Botón PDF -->
                   <button
                     id="btn-{reporte.id}-pdf"
                     onclick={() => simularDescargaVisual(reporte.id, "pdf")}
@@ -369,7 +438,6 @@
                       /></svg
                     >
                   </button>
-                  <!-- Botón EXCEL (XLSX) -->
                   <button
                     id="btn-{reporte.id}-xlsx"
                     onclick={() => simularDescargaVisual(reporte.id, "xlsx")}
@@ -432,16 +500,14 @@
                 stroke-width="2"
                 d="M15 19l-7-7 7-7"
               ></path></svg
-            >
-            Anterior
+            > Anterior
           </button>
           <button
             onclick={paginaSiguiente}
             disabled={paginaActual === totalPaginas || totalPaginas === 0}
             class="px-4 py-2 rounded-xl border border-emerald-900/50 bg-black hover:bg-emerald-900/30 text-gray-300 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
           >
-            Siguiente
-            <svg
+            Siguiente <svg
               class="w-4 h-4"
               fill="none"
               stroke="currentColor"
@@ -450,7 +516,7 @@
                 stroke-linecap="round"
                 stroke-linejoin="round"
                 stroke-width="2"
-                d="M9 5l7 7-7 7"
+                d="M9 5l7 7-7-7"
               ></path></svg
             >
           </button>
@@ -545,9 +611,8 @@
         <button
           onclick={() => (mostrarModalNuevo = false)}
           class="px-6 py-3 rounded-xl font-bold text-gray-400 hover:text-white bg-[#001410] border border-gray-800 hover:border-gray-600 transition-colors shadow-inner"
+          >Cancelar</button
         >
-          Cancelar
-        </button>
         <button
           onclick={() => {
             exportarDatosRealesCSV();
@@ -569,8 +634,7 @@
                 fill="currentColor"
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
               ></path></svg
-            >
-            Exportando...
+            > Exportando...
           {:else}
             Extraer Datos de la Nube
           {/if}

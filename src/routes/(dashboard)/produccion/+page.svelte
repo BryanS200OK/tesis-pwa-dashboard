@@ -10,15 +10,18 @@
   import { db } from "../../../lib/firebase/firebase";
   import LineChart from "$lib/components/LineChart.svelte";
 
+  // --- NUEVAS IMPORTACIONES PARA BOTONES ---
+  import jsPDF from "jspdf";
+  import autoTable from "jspdf-autotable";
+  import { goto } from "$app/navigation";
+
   // --- VARIABLES REACTIVAS DE ESTADO ---
-  // Inicializamos con valores seguros por si la BD tarda en responder
   let valCaudal = $state("1.45");
 
   let historialHoras = $state<string[]>([]);
   let historialProduccion = $state<number[]>([]);
 
   // --- DERIVACIONES (Cálculos en tiempo real) ---
-  // Cuando el ESP32 o el simulador mande un nuevo 'caudal', estas 3 variables se recalcularán solas.
   let produccionDiariaTotal = $derived(
     (parseFloat(valCaudal) * 1.62).toFixed(2),
   );
@@ -29,8 +32,46 @@
     (85 + parseFloat(valCaudal) * 1.5).toFixed(1),
   );
 
+  // --- FUNCIÓN PARA EXPORTAR DATOS ---
+  const exportarDatosPDF = () => {
+    const doc = new jsPDF();
+    const fechaActual = new Date().toLocaleDateString("es-VE");
+    const horaActual = new Date().toLocaleTimeString("es-VE");
+
+    doc.setFontSize(18);
+    doc.setTextColor(16, 185, 129);
+    doc.text("Registro de Producción de Biogás - BioCore IoT", 14, 22);
+
+    doc.setFontSize(11);
+    doc.setTextColor(100);
+    doc.text(`Generado el: ${fechaActual} a las ${horaActual}`, 14, 30);
+    doc.text(`Caudal actual registrado: ${valCaudal} m³/h`, 14, 36);
+
+    // Formatear arreglos para la tabla del PDF
+    const filasTabla = historialHoras.map((hora, index) => [
+      hora,
+      `${historialProduccion[index]} m³`,
+      "Flujo Estable",
+    ]);
+
+    autoTable(doc, {
+      startY: 45,
+      head: [["Hora de Lectura", "Producción Calculada", "Estado del Flujo"]],
+      body: filasTabla,
+      headStyles: { fillColor: [16, 185, 129] },
+      theme: "grid",
+    });
+
+    doc.save(`Registro_Produccion_${fechaActual.replace(/\//g, "-")}.pdf`);
+  };
+
+  // --- FUNCIÓN PARA NAVEGAR AL HISTORIAL ---
+  const irAlHistorial = () => {
+    // eslint-disable-next-line svelte/no-navigation-without-resolve
+    goto("/historial");
+  };
+
   onMount(() => {
-    // Consulta a Firebase: traemos los últimos 15 datos
     const q = query(
       collection(db, "lecturas_biodigestor"),
       orderBy("timestamp", "desc"),
@@ -55,7 +96,6 @@
             }),
           );
 
-          // Lógica de simulación para pruebas (hasta que el ESP32 mande 'caudal' real)
           const caudalRealOSimulado =
             data.caudal || parseFloat((1.4 + Math.random() * 0.1).toFixed(2));
           const produccionCalculada = parseFloat(
@@ -64,7 +104,6 @@
 
           producciones.unshift(produccionCalculada);
 
-          // Actualizamos la tarjeta superior solo con el dato más reciente
           if (primerDocumento) {
             valCaudal = caudalRealOSimulado.toString();
             primerDocumento = false;
@@ -72,7 +111,6 @@
         }
       });
 
-      // Actualizamos los arreglos reactivos para que la gráfica de ECharts se redibuje
       historialHoras = horas;
       historialProduccion = producciones;
     });
@@ -107,7 +145,9 @@
       </p>
     </div>
     <div class="flex gap-3">
+      <!-- BOTÓN EXPORTAR ACTUALIZADO -->
       <button
+        onclick={exportarDatosPDF}
         class="flex items-center gap-2 px-5 py-2.5 bg-[#001410] border border-green-900/50 text-gray-300 text-sm font-bold rounded-xl shadow-inner hover:bg-[#01211b] hover:text-white transition-all duration-300"
       >
         <svg
@@ -124,7 +164,10 @@
         >
         Exportar Datos
       </button>
+
+      <!-- BOTÓN HISTORIAL ACTUALIZADO -->
       <button
+        onclick={irAlHistorial}
         class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-green-500 text-white text-sm font-bold rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.3)] border border-emerald-400/50 hover:shadow-[0_0_25px_rgba(16,185,129,0.5)] transition-all duration-300 hover:-translate-y-0.5"
       >
         <svg
@@ -146,7 +189,7 @@
 
   <!-- TARJETAS SUPERIORES DE DATOS DINÁMICOS -->
   <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-    <!-- Tarjeta 1: Volumen Hoy (Verde Premium) -->
+    <!-- Tarjeta 1: Volumen Hoy -->
     <div
       class="interactive-card relative overflow-hidden bg-gradient-to-br from-emerald-600 to-green-900 p-7 rounded-3xl shadow-[0_10px_30px_rgba(16,185,129,0.25)] border border-emerald-400/40 text-white"
     >
@@ -173,7 +216,6 @@
         </span>
       </div>
 
-      <!-- VALOR REACTIVO DE PRODUCCIÓN -->
       <div
         class="text-6xl font-black drop-shadow-xl relative z-10 flex items-baseline gap-2 mb-2 tracking-tight"
       >
@@ -225,7 +267,6 @@
         Acumulado (Agosto 2026)
       </h3>
 
-      <!-- VALOR REACTIVO DE ACUMULADO -->
       <div
         class="text-5xl font-black text-white drop-shadow-[0_0_15px_rgba(6,182,212,0.2)] flex items-baseline gap-2 mb-4 tracking-tight"
       >
@@ -277,7 +318,6 @@
         Eficiencia de Conversión
       </h3>
 
-      <!-- VALOR REACTIVO DE EFICIENCIA -->
       <div
         class="text-5xl font-black text-white drop-shadow-[0_0_15px_rgba(99,102,241,0.2)] flex items-baseline gap-1 mb-4 tracking-tight"
       >
@@ -343,7 +383,6 @@
       class="flex-1 w-full bg-[#000a08]/50 border border-dashed border-green-900/30 rounded-2xl flex items-center justify-center relative p-2 md:p-6 min-h-[450px]"
     >
       {#if historialProduccion.length > 0}
-        <!-- AL PASAR SERIESNAME, EL TOOLTIP YA SE VE PROFESIONAL -->
         <LineChart
           id="chart-produccion-detalle"
           title=""
