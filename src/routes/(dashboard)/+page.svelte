@@ -10,10 +10,21 @@
   import { db } from "../../lib/firebase/firebase";
   import LineChart from "$lib/components/LineChart.svelte";
   import DonutChart from "$lib/components/DonutChart.svelte";
-  import * as echarts from "echarts"; // Importamos echarts para la gráfica multilínea
+  import * as echarts from "echarts";
 
   // --- LÓGICA DE TIEMPO REAL (Reloj Vivo) ---
   let tiempoActual = $state(new Date());
+
+  // --- VARIABLES DE INTELIGENCIA ARTIFICIAL ---
+  type TipoPronostico = {
+    mensaje?: string;
+    temperatura_promedio?: number;
+    metano_proyectado_ppm?: number;
+    analisis?: string;
+  };
+  let pronosticoIA = $state<TipoPronostico | null>(null);
+  let cargandoIA = $state(true);
+  let errorIA = $state<string | null>(null);
 
   // --- VARIABLES REACTIVAS PARA LAS TARJETAS ---
   let valTemperatura = $state("0.0");
@@ -49,6 +60,22 @@
       multiChartInstance = echarts.init(multiChartContainer);
       window.addEventListener("resize", () => multiChartInstance?.resize());
     }
+
+    // --- PETICIÓN AL MOTOR DE IA (FastAPI) ---
+    const fetchIA = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/api/pronostico-general");
+        if (!res.ok) throw new Error("Fallo al conectar con el backend");
+        pronosticoIA = await res.json();
+      } catch (e) {
+        errorIA = (e as Error).message;
+      } finally {
+        cargandoIA = false;
+      }
+    };
+    fetchIA(); // Llama la primera vez
+    // Actualizar el pronóstico de IA cada 60 segundos
+    const intervaloIA = setInterval(fetchIA, 60000);
 
     // 1. Ciclo del Reloj
     const intervalo = setInterval(() => {
@@ -89,8 +116,6 @@
           temps.unshift(data.temperatura_c || 0);
 
           // SIMULACIÓN TEMPORAL: Como el ESP32 aún no envía esto, creamos una pequeña variación
-          // alrededor del valor base para que la gráfica multilínea se vea viva.
-          // Cuando Firebase reciba "data.presion", usará el dato real.
           presiones.unshift(
             data.presion || parseFloat((1.2 + Math.random() * 0.06).toFixed(2)),
           );
@@ -107,7 +132,7 @@
               valTemperatura = data.temperatura_c.toFixed(1);
             if (data.metano_ppm) valGas = data.metano_ppm.toString();
 
-            // Actualizamos los valores de las tarjetas con la simulación o el dato real
+            // Actualizamos los valores de las tarjetas
             valPresion = presiones[0].toString();
             valPh = phs[0].toString();
             valCaudal = caudales[0].toString();
@@ -128,6 +153,7 @@
 
     return () => {
       clearInterval(intervalo);
+      clearInterval(intervaloIA);
       unsubscribe();
       if (multiChartInstance) {
         window.removeEventListener("resize", () =>
@@ -138,7 +164,7 @@
     };
   });
 
-  // Efecto para actualizar la gráfica multilínea cuando llegan nuevos datos
+  // Efecto para actualizar la gráfica multilínea
   $effect(() => {
     if (multiChartInstance && historialHoras.length > 0) {
       multiChartInstance.setOption({
@@ -294,7 +320,9 @@
   ]);
 </script>
 
-<div class="space-y-6 max-w-[1600px] mx-auto pb-10">
+<div
+  class="space-y-6 max-w-[1600px] mx-auto pb-10 px-4 sm:px-6 overflow-x-hidden"
+>
   <!-- Contenedor Superior -->
   <div
     class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 gap-4"
@@ -355,7 +383,7 @@
     </div>
   </div>
 
-  <!-- Tarjetas -->
+  <!-- Tarjetas de Métricas -->
   <div
     class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5 mb-8"
   >
@@ -421,6 +449,105 @@
     {/each}
   </div>
 
+  <!-- SECCIÓN DE INTELIGENCIA ARTIFICIAL -->
+  <div
+    class="mb-6 interactive-card bg-gradient-to-br from-[#012b23] to-black/80 p-6 rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.15)] border border-emerald-500/40 relative overflow-hidden"
+  >
+    <!-- Resplandor de fondo -->
+    <div
+      class="absolute -right-20 -top-20 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl"
+    ></div>
+
+    <div class="flex items-center gap-3 mb-4 relative z-10">
+      <span class="text-3xl animate-bounce" style="animation-duration: 2s;"
+        >🤖</span
+      >
+      <h3 class="text-emerald-400 font-black text-xl tracking-wide glow-title">
+        Pronóstico de IA (Próximos 3 días)
+      </h3>
+    </div>
+
+    {#if cargandoIA}
+      <div
+        class="flex items-center gap-3 text-emerald-500/70 p-4 relative z-10"
+      >
+        <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"
+          ><circle
+            class="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            stroke-width="4"
+          ></circle><path
+            class="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          ></path></svg
+        >
+        <span class="font-mono text-sm"
+          >Analizando termodinámica histórica del tanque...</span
+        >
+      </div>
+    {:else if errorIA}
+      <p
+        class="text-red-400 font-mono text-sm p-4 bg-red-950/30 rounded-lg border border-red-900/50 relative z-10"
+      >
+        ⚠️ Error de conexión IA: {errorIA}
+      </p>
+    {:else if pronosticoIA?.mensaje}
+      <p
+        class="text-amber-400 font-mono text-sm p-4 bg-amber-950/30 rounded-lg border border-amber-900/50 relative z-10"
+      >
+        ⏳ {pronosticoIA.mensaje}
+      </p>
+    {:else}
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 relative z-10">
+        <div
+          class="bg-black/40 p-4 rounded-xl border border-white/5 shadow-inner"
+        >
+          <p
+            class="text-xs text-gray-400 uppercase font-bold tracking-wider mb-1"
+          >
+            Temp. Base Estable
+          </p>
+          <p class="text-3xl font-black text-white">
+            {pronosticoIA?.temperatura_promedio}<span
+              class="text-lg text-emerald-400 ml-1">°C</span
+            >
+          </p>
+        </div>
+
+        <div
+          class="bg-black/40 p-4 rounded-xl border border-white/5 shadow-inner"
+        >
+          <p
+            class="text-xs text-gray-400 uppercase font-bold tracking-wider mb-1"
+          >
+            Producción Estimada
+          </p>
+          <p class="text-3xl font-black text-white">
+            {pronosticoIA?.metano_proyectado_ppm}<span
+              class="text-lg text-cyan-400 ml-1">ppm</span
+            >
+          </p>
+        </div>
+
+        <div
+          class="bg-emerald-950/30 p-4 rounded-xl border border-emerald-500/20 shadow-inner flex items-center"
+        >
+          <p class="text-sm text-emerald-100 leading-relaxed font-medium">
+            <span
+              class="text-emerald-400 font-bold uppercase tracking-wider text-xs block mb-1"
+              >Diagnóstico Operativo:</span
+            >
+            {pronosticoIA?.analisis}
+          </p>
+        </div>
+      </div>
+    {/if}
+  </div>
+
   <!-- Gráficos Principales -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
     <!-- Gráfico 1: Producción de biogás -->
@@ -444,7 +571,6 @@
         >
           <p class="text-xs text-gray-400 mb-1">Total hoy</p>
           <p class="text-2xl font-black text-white flex items-center gap-2">
-            <!-- VALOR DINÁMICO EN BASE AL CAUDAL -->
             {totalProduccion} m³
             <span
               class="text-xs text-lime-400 bg-lime-900/40 px-2 py-0.5 rounded-full border border-lime-500/30 shadow-[0_0_5px_#4ade80]"
@@ -512,7 +638,6 @@
       <div
         class="flex-1 w-full bg-black/30 border border-dashed border-green-900/50 rounded-xl flex items-center justify-center relative overflow-hidden p-4"
       >
-        <!-- AQUÍ SE RENDERIZA LA GRÁFICA MULTILÍNEA -->
         <div
           bind:this={multiChartContainer}
           class="w-full h-full min-h-[220px]"
