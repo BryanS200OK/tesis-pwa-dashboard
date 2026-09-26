@@ -14,8 +14,14 @@
   import jsPDF from "jspdf";
   import autoTable from "jspdf-autotable";
 
-  // --- LÓGICA DE TIEMPO REAL (Reloj Vivo) ---
+  // --- LÓGICA DE TIEMPO REAL Y CONEXIÓN ---
   let tiempoActual = $state(new Date());
+  let ultimaLecturaTime = $state(0);
+
+  // Si la última lectura de Firebase tiene menos de 20 segundos de antigüedad, estamos conectados
+  let isConnected = $derived(
+    tiempoActual.getTime() - ultimaLecturaTime < 20000,
+  );
 
   // --- VARIABLES DE INTELIGENCIA ARTIFICIAL ---
   type TipoPronostico = {
@@ -25,7 +31,7 @@
     analisis?: string;
   };
   let pronosticoIA = $state<TipoPronostico | null>(null);
-  let cargandoIA = $state(true);
+  let cargandoIA = $state(false);
   let errorIA = $state<string | null>(null);
 
   // --- VARIABLES REACTIVAS PARA LAS TARJETAS ---
@@ -36,10 +42,7 @@
   let valCaudal = $state("1.45");
   let valHumedad = $state("65");
 
-  // Producción total simulada basada en el caudal actual
   let totalProduccion = $derived((parseFloat(valCaudal) * 1.62).toFixed(2));
-
-  // Evalúa automáticamente si la temperatura supera los 40 grados
   let alertaTemperaturaAlta = $derived(parseFloat(valTemperatura) > 40);
 
   // --- VARIABLES REACTIVAS PARA LAS GRÁFICAS ---
@@ -50,39 +53,40 @@
   let historialPh = $state<number[]>([]);
   let historialCaudal = $state<number[]>([]);
 
-  // Referencia para el contenedor de la gráfica cruzada
   let multiChartContainer: HTMLDivElement;
   let multiChartInstance: echarts.ECharts | null = null;
 
+  // --- PETICIÓN AL MOTOR DE IA (FastAPI) ---
+  const fetchIA = async () => {
+    if (!isConnected) return; // Si no hay conexión con el ESP32, no consultar la IA
+    try {
+      cargandoIA = true;
+      const res = await fetch("http://localhost:8000/api/pronostico-general");
+      if (!res.ok) throw new Error("Fallo al conectar con el backend");
+      pronosticoIA = await res.json();
+      errorIA = null;
+    } catch (e) {
+      errorIA = (e as Error).message;
+    } finally {
+      cargandoIA = false;
+    }
+  };
+
   onMount(() => {
-    // Inicializamos la gráfica multilínea
     if (multiChartContainer) {
       multiChartInstance = echarts.init(multiChartContainer);
       window.addEventListener("resize", () => multiChartInstance?.resize());
     }
 
-    // --- PETICIÓN AL MOTOR DE IA (FastAPI) ---
-    const fetchIA = async () => {
-      try {
-        // NOTA: Cuando subas el backend a la nube (Render/Railway), cambia localhost por tu URL real
-        const res = await fetch("http://localhost:8000/api/pronostico-general");
-        if (!res.ok) throw new Error("Fallo al conectar con el backend");
-        pronosticoIA = await res.json();
-      } catch (e) {
-        errorIA = (e as Error).message;
-      } finally {
-        cargandoIA = false;
-      }
-    };
-    fetchIA();
-    const intervaloIA = setInterval(fetchIA, 60000);
-
-    // 1. Ciclo del Reloj
+    // 1. Ciclo del Reloj (Actualiza cada segundo para evaluar la conexión)
     const intervalo = setInterval(() => {
       tiempoActual = new Date();
     }, 1000);
 
-    // 2. Conexión a Firebase
+    // 2. Temporizador IA: Intenta actualizar la IA cada minuto si hay conexión
+    const intervaloIA = setInterval(fetchIA, 60000);
+
+    // 3. Conexión a Firebase
     const q = query(
       collection(db, "lecturas_biodigestor"),
       orderBy("timestamp", "desc"),
@@ -90,6 +94,14 @@
     );
 
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      // Registrar la hora del último dato ingresado
+      if (!querySnapshot.empty) {
+        const primerDato = querySnapshot.docs[0].data();
+        if (primerDato.timestamp) {
+          ultimaLecturaTime = primerDato.timestamp.toMillis();
+        }
+      }
+
       const horas: string[] = [];
       const metanos: number[] = [];
       const temps: number[] = [];
@@ -113,7 +125,6 @@
 
           metanos.unshift(data.metano_ppm || 0);
           temps.unshift(data.temperatura_c || 0);
-
           presiones.unshift(
             data.presion || parseFloat((1.2 + Math.random() * 0.06).toFixed(2)),
           );
@@ -128,11 +139,9 @@
             if (data.temperatura_c)
               valTemperatura = data.temperatura_c.toFixed(1);
             if (data.metano_ppm) valGas = data.metano_ppm.toString();
-
             valPresion = presiones[0].toString();
             valPh = phs[0].toString();
             valCaudal = caudales[0].toString();
-
             primerDocumento = false;
           }
         }
@@ -157,6 +166,13 @@
         multiChartInstance.dispose();
       }
     };
+  });
+
+  // Efecto que arranca la IA automáticamente apenas el ESP32 se reconecte
+  $effect(() => {
+    if (isConnected && !pronosticoIA && !cargandoIA && !errorIA) {
+      fetchIA();
+    }
   });
 
   // Efecto para actualizar la gráfica multilínea
@@ -223,7 +239,6 @@
     }
   });
 
-  // Derivaciones reactivas del reloj
   let fechaFormateada = $derived(
     tiempoActual.toLocaleDateString("es-VE", {
       day: "2-digit",
@@ -239,20 +254,15 @@
     }),
   );
 
-  // --- FUNCIÓN PARA GENERAR REPORTE PDF ---
   const generarReportePDF = () => {
     const doc = new jsPDF();
-
-    // 1. Título y Encabezado
     doc.setFontSize(20);
     doc.setTextColor(16, 185, 129);
     doc.text("Reporte de Telemetría - Sistema BioCore", 14, 22);
-
     doc.setFontSize(11);
     doc.setTextColor(100);
     doc.text(`Generado el: ${fechaFormateada} a las ${horaFormateada}`, 14, 30);
 
-    // 2. Tabla de Métricas Actuales
     autoTable(doc, {
       startY: 40,
       head: [["Parámetro", "Valor Actual", "Unidad", "Estado del Sistema"]],
@@ -273,15 +283,12 @@
       theme: "grid",
     });
 
-    // 3. Resultados de Inteligencia Artificial
-    if (pronosticoIA && !pronosticoIA.mensaje) {
+    if (pronosticoIA && !pronosticoIA.mensaje && isConnected) {
       // @ts-expect-error: jspdf-autotable inyecta lastAutoTable dinámicamente
       const finalY = doc.lastAutoTable.finalY || 100;
-
       doc.setFontSize(14);
       doc.setTextColor(0);
       doc.text("Diagnóstico Predictivo (IA)", 14, finalY + 15);
-
       doc.setFontSize(11);
       doc.text(
         `Temperatura Base Estable: ${pronosticoIA.temperatura_promedio} °C`,
@@ -293,19 +300,15 @@
         14,
         finalY + 32,
       );
-
       const analisisTexto = doc.splitTextToSize(
         `Conclusión: ${pronosticoIA.analisis}`,
         180,
       );
       doc.text(analisisTexto, 14, finalY + 42);
     }
-
-    // 4. Descargar el archivo
     doc.save(`Reporte_Biodigestor_${fechaFormateada.replace(/\//g, "-")}.pdf`);
   };
 
-  // --- DATOS DE MÉTRICAS (TARJETAS) ---
   let metrics = $derived([
     {
       title: "Temperatura",
@@ -384,7 +387,6 @@
 <div
   class="space-y-6 max-w-[1600px] mx-auto pb-10 px-4 sm:px-6 overflow-x-hidden"
 >
-  <!-- Contenedor Superior -->
   <div
     class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 gap-4"
   >
@@ -396,8 +398,6 @@
         Monitoreo integral y telemetría en tiempo real del biodigestor.
       </p>
     </div>
-
-    <!-- Botones y Reloj -->
     <div class="flex flex-wrap items-center gap-3">
       <div
         class="flex items-center gap-2 bg-[#011612] border border-green-900/50 rounded-md px-4 py-2 text-sm font-mono text-lime-400 shadow-[0_0_10px_rgba(22,163,74,0.2)]"
@@ -407,14 +407,13 @@
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-        >
-          <path
+          ><path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
             d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-          ></path>
-        </svg>
+          ></path></svg
+        >
         <span>{fechaFormateada}</span>
         <span class="text-gray-500">|</span>
         <span
@@ -422,7 +421,6 @@
           >{horaFormateada}</span
         >
       </div>
-
       <button
         onclick={generarReportePDF}
         class="interactive-card flex items-center gap-2 bg-gradient-to-r from-green-700 to-green-600 hover:from-green-600 hover:to-lime-600 text-white text-sm font-bold px-5 py-2 rounded-md shadow-[0_0_15px_rgba(22,163,74,0.4)] border border-green-500/50"
@@ -432,20 +430,18 @@
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-        >
-          <path
+          ><path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2.5"
             d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-          ></path>
-        </svg>
+          ></path></svg
+        >
         Exportar Reporte
       </button>
     </div>
   </div>
 
-  <!-- Tarjetas de Métricas -->
   <div
     class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5 mb-8"
   >
@@ -463,13 +459,12 @@
               stroke="currentColor"
               stroke-width="2"
               viewBox="0 0 24 24"
-            >
-              <path
+              ><path
                 stroke-linecap="round"
                 stroke-linejoin="round"
                 d={metric.iconPath}
-              />
-            </svg>
+              /></svg
+            >
           </div>
           <span class="text-sm font-bold text-gray-200 tracking-wide"
             >{metric.title}</span
@@ -511,25 +506,54 @@
     {/each}
   </div>
 
-  <!-- SECCIÓN DE INTELIGENCIA ARTIFICIAL -->
+  <!-- SECCIÓN DE INTELIGENCIA ARTIFICIAL DINÁMICA -->
   <div
     class="mb-6 interactive-card bg-gradient-to-br from-[#012b23] to-black/80 p-6 rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.15)] border border-emerald-500/40 relative overflow-hidden"
   >
-    <!-- Resplandor de fondo -->
     <div
       class="absolute -right-20 -top-20 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl"
     ></div>
 
     <div class="flex items-center gap-3 mb-4 relative z-10">
-      <span class="text-3xl animate-bounce" style="animation-duration: 2s;"
-        >🤖</span
+      <span
+        class="text-3xl {isConnected
+          ? 'animate-bounce'
+          : 'grayscale opacity-50'}"
+        style="animation-duration: 2s;">🤖</span
       >
       <h3 class="text-emerald-400 font-black text-xl tracking-wide glow-title">
         Pronóstico de IA (Próximos 3 días)
       </h3>
     </div>
 
-    {#if cargandoIA}
+    <!-- EL ESTADO DE CONEXIÓN GOBIERNA LA VISTA -->
+    {#if !isConnected}
+      <div
+        class="flex items-center gap-4 p-4 bg-red-950/30 rounded-lg border border-red-900/50 relative z-10 shadow-inner"
+      >
+        <svg
+          class="w-8 h-8 text-red-500 animate-pulse shrink-0"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          ><path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M18.364 5.636a9 9 0 00-12.728 0M15.536 8.464a5 5 0 00-7.072 0M12 11.293L12 11.293M3 3l18 18"
+          ></path></svg
+        >
+        <div class="flex flex-col">
+          <span class="text-red-400 font-bold tracking-wide uppercase"
+            >Desconectado</span
+          >
+          <span class="text-red-300/80 font-mono text-xs"
+            >El ESP32 no está enviando datos a la base de datos. El análisis
+            predictivo se encuentra en pausa.</span
+          >
+        </div>
+      </div>
+    {:else if cargandoIA}
       <div
         class="flex items-center gap-3 text-emerald-500/70 p-4 relative z-10"
       >
@@ -555,7 +579,7 @@
       <p
         class="text-red-400 font-mono text-sm p-4 bg-red-950/30 rounded-lg border border-red-900/50 relative z-10"
       >
-        ⚠️ Error de conexión IA: {errorIA}
+        ⚠️ Error en el Motor IA: {errorIA}
       </p>
     {:else if pronosticoIA?.mensaje}
       <p
@@ -579,7 +603,6 @@
             >
           </p>
         </div>
-
         <div
           class="bg-black/40 p-4 rounded-xl border border-white/5 shadow-inner"
         >
@@ -594,7 +617,6 @@
             >
           </p>
         </div>
-
         <div
           class="bg-emerald-950/30 p-4 rounded-xl border border-emerald-500/20 shadow-inner flex items-center"
         >
@@ -610,9 +632,7 @@
     {/if}
   </div>
 
-  <!-- Gráficos Principales -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-    <!-- Gráfico 1: Producción de biogás -->
     <div
       class="interactive-card bg-gradient-to-br from-[#01211b] to-black/80 p-6 rounded-2xl shadow-lg border border-green-900/50 h-96 flex flex-col"
     >
@@ -623,9 +643,14 @@
           </h3>
           <div class="flex items-center gap-2 mt-1">
             <span
-              class="w-4 h-1 bg-green-500 rounded animate-pulse shadow-[0_0_5px_#22c55e]"
+              class="w-4 h-1 {isConnected
+                ? 'bg-green-500 animate-pulse shadow-[0_0_5px_#22c55e]'
+                : 'bg-gray-500'} rounded"
             ></span>
-            <span class="text-xs text-gray-400">Producción diaria actual</span>
+            <span
+              class="text-xs {isConnected ? 'text-gray-400' : 'text-gray-500'}"
+              >Producción diaria actual</span
+            >
           </div>
         </div>
         <div
@@ -641,7 +666,6 @@
           </p>
         </div>
       </div>
-
       <div
         class="flex-1 w-full bg-black/30 border border-dashed border-green-900/50 rounded-xl flex items-center justify-center relative overflow-hidden p-4"
       >
@@ -656,13 +680,12 @@
           />
         {:else}
           <p class="text-gray-500 font-mono text-xs animate-pulse">
-            Cargando curva de producción...
+            Esperando datos de producción...
           </p>
         {/if}
       </div>
     </div>
 
-    <!-- Gráfico 2: Tendencias Multilínea -->
     <div
       class="interactive-card bg-gradient-to-br from-[#01211b] to-black/80 p-6 rounded-2xl shadow-lg border border-green-900/50 h-96 flex flex-col"
     >
@@ -696,7 +719,6 @@
           ></span> Caudal</span
         >
       </div>
-
       <div
         class="flex-1 w-full bg-black/30 border border-dashed border-green-900/50 rounded-xl flex items-center justify-center relative overflow-hidden p-4"
       >
@@ -708,7 +730,6 @@
     </div>
   </div>
 
-  <!-- Contenedores Inferiores -->
   <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
     <div
       class="interactive-card bg-gradient-to-br from-[#012b23] to-black/80 p-6 rounded-2xl shadow-lg border border-green-900/50 flex flex-col"
@@ -816,7 +837,6 @@
 </div>
 
 <style>
-  /* --- EFECTOS VISUALES Y ANIMACIONES --- */
   .interactive-card {
     transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1);
     position: relative;
