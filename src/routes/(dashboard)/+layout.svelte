@@ -3,7 +3,7 @@
   import favicon from "$lib/assets/favicon.svg";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { resolve } from "$app/paths"; // <-- Función resolve para proteger las rutas
+  import { resolve } from "$app/paths";
   import { onMount } from "svelte";
   import {
     collection,
@@ -12,8 +12,6 @@
     orderBy,
     limit,
   } from "firebase/firestore";
-
-  // --- IMPORTACIONES DE FIREBASE ---
   import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
   import { doc, getDoc } from "firebase/firestore";
   import { db } from "../../lib/firebase/firebase";
@@ -21,22 +19,26 @@
   let { children } = $props();
 
   let isDark = $state(false);
+  let isSidebarOpen = $state(true); // Control para escritorio
+  let isMobileMenuOpen = $state(false); // Control para móviles
+
   // --- LÓGICA DE CONEXIÓN REAL DEL HARDWARE ---
   let ultimaLecturaTime = $state(0);
   let tiempoActual = $state(Date.now());
-
-  // Si el simulador envió datos hace menos de 20 segundos, está conectado.
   let isConnected = $derived(tiempoActual - ultimaLecturaTime < 20000);
 
-  onMount(() => {
-    // ... aquí va lo de la sesión del Auth que ya tienes ...
+  // --- ESTADOS REACTIVOS DEL USUARIO LOGUEADO ---
+  let inicialUsuario = $state("?");
+  let nombreUsuario = $state("Cargando...");
+  let rolUsuario = $state("Validando...");
 
-    // 1. Reloj interno
+  onMount(() => {
+    // Reloj interno
     const interval = setInterval(() => {
       tiempoActual = Date.now();
     }, 1000);
 
-    // 2. Escuchamos la última lectura del biodigestor
+    // Escuchamos la última lectura del biodigestor
     const qLecturas = query(
       collection(db, "lecturas_biodigestor"),
       orderBy("timestamp", "desc"),
@@ -49,24 +51,9 @@
       }
     });
 
-    return () => {
-      clearInterval(interval);
-      unsubLecturas();
-      // Y también llamar al unsubscribe() del Auth que ya tienes
-    };
-  });
-
-  let isSidebarOpen = $state(true);
-
-  // --- ESTADOS REACTIVOS DEL USUARIO LOGUEADO ---
-  let inicialUsuario = $state("?");
-  let nombreUsuario = $state("Cargando...");
-  let rolUsuario = $state("Validando...");
-
-  onMount(() => {
+    // Autenticación
     const auth = getAuth();
-
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user) {
         nombreUsuario =
           user.displayName || user.email?.split("@")[0] || "Usuario";
@@ -90,7 +77,11 @@
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      clearInterval(interval);
+      unsubLecturas();
+      unsubscribeAuth();
+    };
   });
 
   async function cerrarSesion() {
@@ -113,6 +104,10 @@
     }
   }
 
+  function closeMobileMenu() {
+    isMobileMenuOpen = false;
+  }
+
   const navLinkClasses =
     "flex items-center gap-3 px-3 transition-all duration-300 rounded-lg overflow-hidden whitespace-nowrap";
   const inactiveClasses =
@@ -125,22 +120,35 @@
   <link rel="icon" href={favicon} />
 </svelte:head>
 
+<!-- CONTENEDOR PRINCIPAL: Previene desbordamientos -->
 <div
-  class="flex h-screen bg-gray-50 dark:bg-[#000a08] font-sans transition-colors duration-300"
+  class="flex h-screen bg-gray-50 dark:bg-[#000a08] font-sans transition-colors duration-300 w-full overflow-hidden"
 >
+  <!-- OVERLAY OSCURO PARA MÓVILES (Fondo borroso al abrir menú) -->
+  {#if isMobileMenuOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="fixed inset-0 bg-black/70 z-40 md:hidden backdrop-blur-sm transition-opacity"
+      onclick={closeMobileMenu}
+    ></div>
+  {/if}
+
+  <!-- BARRA LATERAL (Sidebar adaptativa) -->
   <aside
-    class="bg-[#011612] dark:bg-[#011612] text-white flex flex-col justify-between shadow-2xl z-20 transition-all duration-300 border-r border-emerald-900/40 {isSidebarOpen
-      ? 'w-64'
-      : 'w-20'}"
+    class="fixed inset-y-0 left-0 z-50 flex flex-col justify-between bg-[#011612] text-white shadow-2xl border-r border-emerald-900/40 transition-all duration-300
+           w-64 {isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} 
+           md:relative md:translate-x-0 {isSidebarOpen ? 'md:w-64' : 'md:w-20'}"
   >
     <div>
       <div
-        class="relative bg-[#001410] dark:bg-[#001410] h-16 w-full border-b border-emerald-900/40 transition-all duration-300"
+        class="relative bg-[#001410] h-16 w-full border-b border-emerald-900/40 transition-all duration-300"
       >
         <div
-          class="absolute left-4 top-0 bottom-0 flex items-center gap-3 overflow-hidden whitespace-nowrap transition-opacity duration-300 {isSidebarOpen
+          class="absolute left-4 top-0 bottom-0 flex items-center gap-3 overflow-hidden whitespace-nowrap transition-opacity duration-300 {isSidebarOpen ||
+          isMobileMenuOpen
             ? 'opacity-100'
-            : 'opacity-0 pointer-events-none'}"
+            : 'md:opacity-0 pointer-events-none'}"
         >
           <div
             class="w-10 h-10 bg-gradient-to-br from-emerald-500 to-green-600 rounded-xl flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.3)] shrink-0"
@@ -165,9 +173,10 @@
           </h1>
         </div>
 
+        <!-- Botón de colapsar SOLO visible en PC -->
         <button
           onclick={() => (isSidebarOpen = !isSidebarOpen)}
-          class="absolute top-1/2 -translate-y-1/2 {isSidebarOpen
+          class="hidden md:block absolute top-1/2 -translate-y-1/2 {isSidebarOpen
             ? 'right-4'
             : 'left-1/2 -translate-x-1/2'} p-2 rounded-lg bg-[#000a08] border border-emerald-900/50 hover:bg-emerald-900/40 text-emerald-500 hover:text-emerald-300 transition-all duration-300 shadow-inner z-10"
           title={isSidebarOpen ? "Colapsar menú" : "Expandir menú"}
@@ -197,18 +206,17 @@
         </button>
       </div>
 
-      <nav class="mt-6 px-3">
+      <nav class="mt-6 px-3 overflow-y-auto">
         <ul
-          class="space-y-2 text-[13px] uppercase tracking-widest font-semibold"
+          class="space-y-2 text-[13px] uppercase tracking-widest font-semibold pb-4"
         >
-          <!-- CORRECCIÓN DE LOS 10 ENLACES USANDO resolve() -->
           <li>
             <a
               href={resolve("/")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Resumen"
             >
               {#if $page.url.pathname === "/"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -231,19 +239,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Resumen</span
+                  : 'md:opacity-0'}">Resumen</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/metricas")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/metricas'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Métricas en tiempo real"
             >
               {#if $page.url.pathname === "/metricas"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -261,19 +270,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Métricas</span
+                  : 'md:opacity-0'}">Métricas</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/historial")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/historial'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Historial"
             >
               {#if $page.url.pathname === "/historial"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -291,19 +301,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Historial</span
+                  : 'md:opacity-0'}">Historial</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/produccion")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/produccion'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Producción de biogás"
             >
               {#if $page.url.pathname === "/produccion"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -321,19 +332,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Producción</span
+                  : 'md:opacity-0'}">Producción</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/alertas")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/alertas'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Alertas"
             >
               {#if $page.url.pathname === "/alertas"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -351,19 +363,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Alertas</span
+                  : 'md:opacity-0'}">Alertas</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/dispositivos")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/dispositivos'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Dispositivos"
             >
               {#if $page.url.pathname === "/dispositivos"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -381,19 +394,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Dispositivos</span
+                  : 'md:opacity-0'}">Dispositivos</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/reportes")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/reportes'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Reportes"
             >
               {#if $page.url.pathname === "/reportes"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -411,19 +425,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Reportes</span
+                  : 'md:opacity-0'}">Reportes</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/configuracion")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/configuracion'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Configuración"
             >
               {#if $page.url.pathname === "/configuracion"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -446,19 +461,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Configuración</span
+                  : 'md:opacity-0'}">Configuración</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/usuarios")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/usuarios'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Usuarios"
             >
               {#if $page.url.pathname === "/usuarios"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -476,19 +492,20 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Usuarios</span
+                  : 'md:opacity-0'}">Usuarios</span
               >
             </a>
           </li>
           <li>
             <a
               href={resolve("/acerca")}
+              onclick={closeMobileMenu}
               class="{navLinkClasses} {$page.url.pathname === '/acerca'
                 ? activeClasses
                 : inactiveClasses}"
-              title="Acerca de"
             >
               {#if $page.url.pathname === "/acerca"}<div
                   class="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500 shadow-[0_0_10px_#10b981]"
@@ -506,9 +523,10 @@
                 ></path></svg
               >
               <span
-                class="transition-opacity duration-300 {isSidebarOpen
+                class="transition-opacity duration-300 {isSidebarOpen ||
+                isMobileMenuOpen
                   ? 'opacity-100'
-                  : 'opacity-0'}">Acerca del Proyecto</span
+                  : 'md:opacity-0'}">Acerca del Proyecto</span
               >
             </a>
           </li>
@@ -517,9 +535,10 @@
     </div>
 
     <div
-      class="p-4 bg-[#000a08] dark:bg-[#000a08] border-t border-emerald-900/40 flex flex-col justify-center h-[70px] overflow-hidden whitespace-nowrap transition-opacity duration-300 {isSidebarOpen
+      class="p-4 bg-[#000a08] border-t border-emerald-900/40 flex flex-col justify-center h-[70px] overflow-hidden whitespace-nowrap transition-opacity duration-300 {isSidebarOpen ||
+      isMobileMenuOpen
         ? 'opacity-100'
-        : 'opacity-0'}"
+        : 'md:opacity-0'}"
     >
       <div
         class="flex items-center space-x-1 text-[10px] uppercase tracking-widest text-emerald-500 font-bold"
@@ -539,27 +558,52 @@
     </div>
   </aside>
 
-  <!-- CONTENEDOR DERECHO -->
+  <!-- CONTENEDOR DERECHO (Cabecera y Área Principal) -->
   <div
-    class="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-[#000a08] transition-colors duration-300 relative"
+    class="flex-1 flex flex-col min-w-0 overflow-hidden bg-gray-50 dark:bg-[#000a08] transition-colors duration-300 relative"
   >
     <div
       class="absolute -top-[20%] -right-[10%] w-[50%] h-[50%] rounded-full bg-emerald-900/10 blur-[150px] pointer-events-none z-0"
     ></div>
 
+    <!-- CABECERA SUPERIOR RESPONSIVA -->
     <header
-      class="bg-white dark:bg-[#001410]/80 backdrop-blur-md shadow-sm border-b border-gray-200 dark:border-emerald-900/40 h-16 flex justify-between items-center px-6 z-10 transition-colors duration-300 relative"
+      class="bg-white dark:bg-[#001410]/80 backdrop-blur-md shadow-sm border-b border-gray-200 dark:border-emerald-900/40 h-16 flex justify-between items-center px-4 sm:px-6 z-10 transition-colors duration-300 relative"
     >
-      <h2 class="text-xl font-bold text-gray-800 dark:text-gray-100">
-        Monitoreo IoT
-      </h2>
+      <div class="flex items-center gap-3">
+        <!-- BOTÓN HAMBURGUESA SOLO MÓVILES -->
+        <button
+          aria-label="Abrir menú"
+          onclick={() => (isMobileMenuOpen = true)}
+          class="md:hidden p-2 -ml-2 text-emerald-500 hover:bg-emerald-900/20 rounded-lg focus:outline-none"
+        >
+          <svg
+            class="w-6 h-6"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            ><path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 6h16M4 12h16M4 18h16"
+            ></path></svg
+          >
+        </button>
 
-      <div class="flex items-center space-x-6">
+        <h2
+          class="text-xl font-bold text-gray-800 dark:text-gray-100 hidden sm:block"
+        >
+          Monitoreo IoT
+        </h2>
+      </div>
+
+      <div class="flex items-center space-x-3 sm:space-x-6">
         <div
-          class="flex items-center gap-3 border-r border-gray-200 dark:border-emerald-900/50 pr-6"
+          class="flex items-center gap-2 sm:gap-3 border-r border-gray-200 dark:border-emerald-900/50 pr-3 sm:pr-6"
         >
           <span
-            class="text-xs font-bold text-gray-500 dark:text-emerald-500 uppercase tracking-widest hidden sm:block"
+            class="text-xs font-bold text-gray-500 dark:text-emerald-500 uppercase tracking-widest hidden md:block"
           >
             Tema {isDark ? "Oscuro" : "Claro"}
           </span>
@@ -621,9 +665,9 @@
         <button
           onclick={cerrarSesion}
           title="Cerrar sesión"
-          class="flex items-center gap-3 pl-4 border-l border-gray-200 dark:border-emerald-900/50 cursor-pointer hover:opacity-80 transition-all group"
+          class="flex items-center gap-3 pl-2 sm:pl-4 border-l border-gray-200 dark:border-emerald-900/50 cursor-pointer hover:opacity-80 transition-all group"
         >
-          <div class="flex flex-col items-end text-right hidden sm:flex">
+          <div class="flex-col items-end text-right hidden md:flex">
             <span
               class="text-sm font-bold text-gray-800 dark:text-gray-200 leading-tight"
               >{nombreUsuario}</span
@@ -639,7 +683,7 @@
             {inicialUsuario}
           </div>
           <svg
-            class="w-4 h-4 text-gray-500 group-hover:text-red-500 transition-colors"
+            class="w-4 h-4 text-gray-500 group-hover:text-red-500 transition-colors hidden sm:block"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
