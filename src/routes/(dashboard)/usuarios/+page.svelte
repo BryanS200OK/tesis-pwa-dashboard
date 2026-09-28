@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { collection, onSnapshot, query } from "firebase/firestore";
+  import {
+    collection,
+    onSnapshot,
+    query,
+    doc,
+    updateDoc,
+  } from "firebase/firestore";
   import { db } from "../../../lib/firebase/firebase";
 
   // Interfaz para TypeScript
@@ -16,34 +22,51 @@
   let usuarios = $state<Usuario[]>([]);
   let cargando = $state(true);
 
+  // --- VARIABLES PARA EL MODAL DE EDICIÓN ---
+  let mostrarModalEditar = $state(false);
+  let guardando = $state(false);
+  let usuarioEditando = $state<Usuario | null>(null);
+
   // Escuchar la base de datos en tiempo real
   onMount(() => {
-    // Apuntamos a la colección "usuarios" que crea el Login
     const q = query(collection(db, "usuarios"));
 
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const usuariosDb: Usuario[] = [];
+      const ahora = new Date();
 
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
+      querySnapshot.forEach((documento) => {
+        const data = documento.data();
 
         // Formatear la fecha de Firebase a texto legible
         let accesoStr = "Nunca";
+        let diffMinutos = 999; // Valor alto por defecto si no hay fecha
+
         if (data.ultimoAcceso && data.ultimoAcceso.toDate) {
-          accesoStr = data.ultimoAcceso.toDate().toLocaleString("es-VE", {
+          const fechaAcceso = data.ultimoAcceso.toDate();
+          accesoStr = fechaAcceso.toLocaleString("es-VE", {
             day: "2-digit",
             month: "2-digit",
             hour: "2-digit",
             minute: "2-digit",
           });
+
+          // Calcular la diferencia de tiempo para la verificación estricta de conexión
+          diffMinutos = (ahora.getTime() - fechaAcceso.getTime()) / 60000;
+        }
+
+        // Verificación estricta: Si Firebase dice "Conectado" pero pasaron más de 30 min sin actividad, es "Desconectado"
+        let estadoReal = data.estado || "Desconectado";
+        if (estadoReal === "Conectado" && diffMinutos > 30) {
+          estadoReal = "Desconectado";
         }
 
         usuariosDb.push({
-          id: doc.id,
+          id: documento.id,
           nombre: data.nombre || "Desconocido",
           email: data.email || "",
           rol: data.rol || "Operador",
-          estado: data.estado || "Desconectado",
+          estado: estadoReal,
           ultimoAcceso: accesoStr,
         });
       });
@@ -54,6 +77,37 @@
 
     return () => unsubscribe();
   });
+
+  // --- FUNCIONES DEL MODAL DE EDICIÓN ---
+  function abrirModalEditar(usuario: Usuario) {
+    // Clonamos el usuario para no alterar la tabla antes de guardar
+    usuarioEditando = { ...usuario };
+    mostrarModalEditar = true;
+  }
+
+  function cerrarModalEditar() {
+    mostrarModalEditar = false;
+    usuarioEditando = null;
+  }
+
+  async function guardarEdicion() {
+    if (!usuarioEditando) return;
+    guardando = true;
+
+    try {
+      const userRef = doc(db, "usuarios", usuarioEditando.id);
+      await updateDoc(userRef, {
+        rol: usuarioEditando.rol,
+        estado: usuarioEditando.estado,
+      });
+      cerrarModalEditar();
+    } catch (error) {
+      console.error("Error al actualizar el usuario:", error);
+      alert("Hubo un error al actualizar los datos en Firebase.");
+    } finally {
+      guardando = false;
+    }
+  }
 </script>
 
 <div class="space-y-6 max-w-[1600px] mx-auto pb-10">
@@ -70,13 +124,14 @@
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-          ><path
+        >
+          <path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
             d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
-          ></path></svg
-        >
+          ></path>
+        </svg>
         Directorio del equipo sincronizado con la nube.
       </p>
     </div>
@@ -84,14 +139,19 @@
     <button
       class="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-600 to-green-500 text-white text-sm font-bold rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.3)] border border-emerald-400/50 hover:-translate-y-0.5 transition-all"
     >
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-        ><path
+      <svg
+        class="w-5 h-5"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
           stroke-linecap="round"
           stroke-linejoin="round"
           stroke-width="2.5"
           d="M12 4v16m8-8H4"
-        ></path></svg
-      >
+        ></path>
+      </svg>
       Añadir Operador
     </button>
   </div>
@@ -105,19 +165,21 @@
           class="w-12 h-12 text-emerald-600/50 animate-spin"
           fill="none"
           viewBox="0 0 24 24"
-          ><circle
+        >
+          <circle
             class="opacity-25"
             cx="12"
             cy="12"
             r="10"
             stroke="currentColor"
             stroke-width="4"
-          ></circle><path
+          ></circle>
+          <path
             class="opacity-75"
             fill="currentColor"
             d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          ></path></svg
-        >
+          ></path>
+        </svg>
         <p
           class="text-emerald-500/70 font-mono text-sm animate-pulse tracking-widest uppercase"
         >
@@ -166,20 +228,20 @@
                 </td>
                 <td class="px-6 py-5">
                   <div
-                    class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-inner {user.estado ===
-                    'Conectado'
+                    class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-inner {user.estado.toLowerCase() ===
+                    'conectado'
                       ? 'bg-emerald-950/40 border-emerald-900/50 text-emerald-400'
                       : 'bg-gray-900/40 border-gray-800 text-gray-500'}"
                   >
                     <span class="relative flex h-2 w-2">
-                      {#if user.estado === "Conectado"}
+                      {#if user.estado.toLowerCase() === "conectado"}
                         <span
                           class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
                         ></span>
                       {/if}
                       <span
-                        class="relative inline-flex rounded-full h-2 w-2 {user.estado ===
-                        'Conectado'
+                        class="relative inline-flex rounded-full h-2 w-2 {user.estado.toLowerCase() ===
+                        'conectado'
                           ? 'bg-emerald-500'
                           : 'bg-gray-600'}"
                       ></span>
@@ -190,14 +252,16 @@
                     >
                   </div>
                 </td>
-                <td class="px-6 py-5 font-mono text-gray-400 text-xs"
-                  >{user.ultimoAcceso}</td
-                >
+                <td class="px-6 py-5 font-mono text-gray-400 text-xs">
+                  {user.ultimoAcceso}
+                </td>
                 <td class="px-6 py-5 text-right pr-10">
                   <button
+                    onclick={() => abrirModalEditar(user)}
                     class="text-cyan-500 hover:text-cyan-300 font-semibold text-xs tracking-wide transition-colors"
-                    >Editar</button
                   >
+                    Editar
+                  </button>
                 </td>
               </tr>
             {/each}
@@ -207,6 +271,138 @@
     {/if}
   </div>
 </div>
+
+<!-- ========================================== -->
+<!-- MODAL FLOTANTE PARA EDITAR USUARIO         -->
+<!-- ========================================== -->
+{#if mostrarModalEditar && usuarioEditando}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/80 backdrop-blur-sm transition-opacity"
+  >
+    <div
+      class="bg-gradient-to-br from-[#01211b] to-[#001410] border border-emerald-500/30 rounded-3xl shadow-[0_0_50px_rgba(16,185,129,0.2)] w-full max-w-md overflow-hidden transform scale-100 transition-transform"
+    >
+      <!-- Cabecera del Modal -->
+      <div
+        class="flex justify-between items-center p-6 border-b border-emerald-900/30"
+      >
+        <h3 class="text-xl font-bold text-white glow-title tracking-tight">
+          Editar Operador
+        </h3>
+        <button
+          aria-label="Cerrar"
+          onclick={cerrarModalEditar}
+          class="text-gray-400 hover:text-white bg-black/40 hover:bg-red-500/20 rounded-full p-2 transition-colors border border-gray-800 hover:border-red-500/50"
+        >
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            ><path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M6 18L18 6M6 6l12 12"
+            ></path></svg
+          >
+        </button>
+      </div>
+
+      <!-- Cuerpo del Modal (Inputs) -->
+      <div class="p-6 space-y-5">
+        <div>
+          <label
+            for="edit-nombre"
+            class="block text-[10px] font-bold text-emerald-400/80 mb-2 uppercase tracking-widest pl-1"
+            >Nombre</label
+          >
+          <input
+            id="edit-nombre"
+            type="text"
+            value={usuarioEditando.nombre}
+            disabled
+            class="w-full px-4 py-3 rounded-xl border border-emerald-900/30 bg-black/50 text-gray-500 cursor-not-allowed shadow-inner"
+          />
+        </div>
+
+        <div>
+          <label
+            for="edit-rol"
+            class="block text-[10px] font-bold text-emerald-400/80 mb-2 uppercase tracking-widest pl-1"
+            >Rol en el Sistema</label
+          >
+          <select
+            id="edit-rol"
+            bind:value={usuarioEditando.rol}
+            class="w-full px-4 py-3 rounded-xl border border-emerald-900/50 bg-[#001410] text-gray-200 focus:border-emerald-500 outline-none shadow-inner transition-all appearance-none cursor-pointer"
+          >
+            <option value="Administrador">Administrador</option>
+            <option value="Administrador / Full-Stack"
+              >Administrador / Full-Stack</option
+            >
+            <option value="Operador">Operador</option>
+            <option value="Visualizador">Visualizador</option>
+          </select>
+        </div>
+
+        <div>
+          <label
+            for="edit-estado"
+            class="block text-[10px] font-bold text-emerald-400/80 mb-2 uppercase tracking-widest pl-1"
+            >Forzar Estado de Red</label
+          >
+          <select
+            id="edit-estado"
+            bind:value={usuarioEditando.estado}
+            class="w-full px-4 py-3 rounded-xl border border-emerald-900/50 bg-[#001410] text-gray-200 focus:border-emerald-500 outline-none shadow-inner transition-all appearance-none cursor-pointer"
+          >
+            <option value="Conectado">Conectado</option>
+            <option value="Desconectado">Desconectado</option>
+          </select>
+        </div>
+      </div>
+      <!-- <- Este era el div de cierre que faltaba -->
+
+      <!-- Botones de Acción -->
+      <div
+        class="p-6 bg-[#000a08]/50 border-t border-emerald-900/30 flex justify-end gap-3"
+      >
+        <button
+          onclick={cerrarModalEditar}
+          class="px-5 py-2.5 rounded-xl font-bold text-gray-400 hover:text-white bg-[#001410] border border-gray-800 hover:border-gray-600 transition-colors shadow-inner"
+        >
+          Cancelar
+        </button>
+        <button
+          onclick={guardarEdicion}
+          disabled={guardando}
+          class="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-green-500 hover:from-green-500 hover:to-emerald-400 text-white font-black rounded-xl transition-all shadow-[0_0_15px_rgba(16,185,129,0.4)] flex items-center gap-2 disabled:opacity-50"
+        >
+          {#if guardando}
+            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"
+              ><circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle><path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path></svg
+            >
+            Guardando...
+          {:else}
+            Guardar Cambios
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .glow-title {
