@@ -274,7 +274,7 @@
           "°C",
           alertaTemperaturaAlta ? "PELIGRO" : "Óptimo",
         ],
-        ["Nivel de Gas (Metano)", valGas, "%", "Óptimo"],
+        ["Nivel de Gas (Metano)", valGas, "ppm", "Óptimo"],
         ["Presión", valPresion, "kPa", "Óptimo"],
         ["pH", valPh, "", "Óptimo"],
         ["Caudal de Biogás", valCaudal, "m³/h", "Óptimo"],
