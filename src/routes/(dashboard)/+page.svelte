@@ -349,7 +349,7 @@
     {
       title: "Nivel de gas",
       value: valGas,
-      unit: "%",
+      unit: "ppm",
       range: "Rango: 0 - 100 %",
       color: "text-cyan-400",
       bgGlow: "shadow-[0_0_15px_rgba(34,211,238,0.3)]",
