@@ -15,14 +15,10 @@
   import jsPDF from "jspdf";
   import autoTable from "jspdf-autotable";
 
-  // --- LÓGICA DE TIEMPO REAL Y CONEXIÓN ---
+  // --- LÓGICA DE TIEMPO REAL Y CONEXIÓN (WATCHDOG) ---
+  let isConnected = $state(false);
+  let timeoutConexion: ReturnType<typeof setTimeout> | undefined;
   let tiempoActual = $state(new Date());
-  let ultimaLecturaTime = $state(0);
-
-  // Si la última lectura de Firebase tiene menos de 20 segundos de antigüedad, estamos conectados
-  let isConnected = $derived(
-    tiempoActual.getTime() - ultimaLecturaTime < 20000,
-  );
 
   // --- VARIABLES DE INTELIGENCIA ARTIFICIAL ---
   type TipoPronostico = {
@@ -54,12 +50,12 @@
   let historialPh = $state<number[]>([]);
   let historialCaudal = $state<number[]>([]);
 
-  let multiChartContainer: HTMLDivElement;
+  let multiChartContainer: HTMLDivElement | undefined = $state();
   let multiChartInstance: echarts.ECharts | null = null;
 
   // --- PETICIÓN AL MOTOR DE IA (FastAPI) ---
   const fetchIA = async () => {
-    if (!isConnected) return; // Si no hay conexión con el ESP32, no consultar la IA
+    if (!isConnected) return;
     try {
       cargandoIA = true;
       const res = await fetch("http://localhost:8000/api/pronostico-general");
@@ -79,15 +75,15 @@
       window.addEventListener("resize", () => multiChartInstance?.resize());
     }
 
-    // 1. Ciclo del Reloj (Actualiza cada segundo para evaluar la conexión)
-    const intervalo = setInterval(() => {
+    // Actualizar el reloj de la interfaz
+    const intervaloReloj = setInterval(() => {
       tiempoActual = new Date();
     }, 1000);
 
-    // 2. Temporizador IA: Intenta actualizar la IA cada minuto si hay conexión
+    // Temporizador IA: Intenta actualizar la IA cada minuto si hay conexión
     const intervaloIA = setInterval(fetchIA, 60000);
 
-    // 3. Conexión a Firebase
+    // Conexión a Firebase
     const q = query(
       collection(db, "lecturas_biodigestor"),
       orderBy("timestamp", "desc"),
@@ -95,12 +91,15 @@
     );
 
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      // Registrar la hora del último dato ingresado
+      // PATRÓN WATCHDOG: Si entra un dato, estamos conectados
       if (!querySnapshot.empty) {
-        const primerDato = querySnapshot.docs[0].data();
-        if (primerDato.timestamp) {
-          ultimaLecturaTime = primerDato.timestamp.toMillis();
-        }
+        isConnected = true;
+        clearTimeout(timeoutConexion);
+
+        // Si pasan 15 segundos sin recibir un snapshot nuevo, se marca como desconectado
+        timeoutConexion = setTimeout(() => {
+          isConnected = false;
+        }, 15000);
       }
 
       const horas: string[] = [];
@@ -157,8 +156,9 @@
     });
 
     return () => {
-      clearInterval(intervalo);
+      clearInterval(intervaloReloj);
       clearInterval(intervaloIA);
+      clearTimeout(timeoutConexion);
       unsubscribe();
       if (multiChartInstance) {
         window.removeEventListener("resize", () =>
